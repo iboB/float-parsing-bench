@@ -7,7 +7,6 @@ project(float-parsing-bench
     LANGUAGES CXX
 )
 
-# cpm
 #################
 # cpm
 if(NOT CPM_SOURCE_CACHE AND NOT DEFINED ENV{CPM_SOURCE_CACHE})
@@ -15,6 +14,15 @@ if(NOT CPM_SOURCE_CACHE AND NOT DEFINED ENV{CPM_SOURCE_CACHE})
     message(STATUS "Setting cpm cache dir to: ${CPM_SOURCE_CACHE}")
 endif()
 include(./get_cpm.cmake)
+
+#######################################
+# cmake lib
+CPMAddPackage(gh:iboB/icm@1.5.6)
+
+list(APPEND CMAKE_MODULE_PATH
+    "${icm_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake"
+)
 
 ######################
 # compiler settings
@@ -55,11 +63,18 @@ set_property(GLOBAL PROPERTY USE_FOLDERS ON) # solution folders
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin) # binaries to bin
 set(CMAKE_LINK_DEPENDS_NO_SHARED ON) # only relink exe if so interface changes
 
+include(icm_check_charconv_fp_to_chars)
+
 ######################
 # packages
-CPMAddPackage(gh:iboB/picobench@2.9.0)
+CPMAddPackage(gh:iboB/picobench@2.10.0)
+CPMAddPackage(gh:iboB/mscharconv@1.2.3)
 
 ######################
 # benchmark
 add_executable(benchmark benchmark.cpp)
-target_link_libraries(benchmark picobench::picobench)
+target_link_libraries(benchmark PRIVATE
+    picobench::picobench
+    msstl::charconv
+)
+target_compile_definitions(benchmark PRIVATE HAVE_STD_CHARCONV=$<BOOL:${haveCharconvFpToChars}>)

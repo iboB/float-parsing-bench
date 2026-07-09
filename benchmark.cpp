@@ -1,8 +1,166 @@
 #define PICOBENCH_IMPLEMENT
 #include <picobench/picobench.hpp>
 
-int main(int argc, char* argv[]) {
-    //picobench::runner r;
-    //r.parse_cmd_line(argc, argv);
-    //return r.run();
+#include <random>
+#include <iostream>
+#include <vector>
+#include <string_view>
+
+#include <msstl/charconv.hpp>
+
+#if HAVE_STD_CHARCONV
+#include <charconv>
+struct std_from_chars {
+    template <typename F>
+    auto operator()(const char* first, const char* last, F& value) const {
+        return std::from_chars(first, last, value);
+    }
+};
+#endif
+
+struct msstl_from_chars {
+    template <typename F>
+    auto operator()(const char* first, const char* last, F& value) const {
+        return msstl::from_chars(first, last, value);
+    }
+};
+
+uint32_t get_seed() {
+    // uint32_t seed = std::random_device{}();
+    uint32_t seed = 42;
+    std::cout << "random seed:" << seed << std::endl;
+    return seed;
+}
+
+template <typename F>
+size_t hash_vec(const std::vector<F>& vec) {
+    std::string_view sv(reinterpret_cast<const char*>(vec.data()), vec.size() * sizeof(F));
+    return std::hash<std::string_view>{}(sv);
+}
+
+template <typename F>
+std::vector<F> get_random_values(std::mt19937& rng, size_t size) {
+    std::uniform_real_distribution<F> dist(-100, 100);
+    std::vector<F> ret(size);
+    for (auto& v : ret) {
+        v = dist(rng);
+    }
+    return ret;
+}
+
+template <typename F>
+std::string to_string(const std::vector<F>& vec) {
+    std::string ret = "[";
+    for (size_t i = 0; i < vec.size(); ++i) {
+        if (i != 0) {
+            ret += ", ";
+        }
+
+        char buf[128] = {};
+        msstl::to_chars(buf, buf + sizeof(buf), vec[i]);
+        ret += buf;
+    }
+    ret += "]";
+    return ret;
+}
+
+bool is_numeric(char c) {
+    return (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+';
+}
+
+template <typename from_chars, typename F>
+void parse_charconv(std::string_view str, std::vector<F>& out) {
+    from_chars fc;
+    const char* cur = str.data();
+    const char* end = str.data() + str.size();
+    while (true) {
+        while (cur < end && !is_numeric(*cur)) {
+            ++cur;
+        }
+        if (cur >= end) {
+            break;
+        }
+
+        double d;
+        auto res = fc(cur, end, d);
+        if (res.ec != std::errc()) {
+            throw std::runtime_error("parse_charconv failed");
+        }
+        out.push_back(F(d));
+        cur = res.ptr;
+    }
+}
+
+struct benchmark_input {
+    std::string json;
+    size_t expected_size;
+    size_t expected_hash;
+
+    template <typename F>
+    explicit benchmark_input(const std::vector<F>& vec)
+        : json(to_string(vec))
+        , expected_size(vec.size())
+        , expected_hash(hash_vec(vec))
+    {}
+
+    picobench::state::input to_input() const {
+        return {int(expected_size), reinterpret_cast<uintptr_t>(this)};
+    }
+
+    static const benchmark_input* from_input_data(uintptr_t ud) {
+        return reinterpret_cast<const benchmark_input*>(ud);
+    }
+};
+
+template <typename F>
+benchmark_input make_benchmark_input(std::mt19937& rng, size_t size) {
+    auto vec = get_random_values<F>(rng, size);
+    return benchmark_input{vec};
+}
+
+template <typename from_chars, typename F>
+void bench_charconv(picobench::state& s) {
+    auto input = benchmark_input::from_input_data(s.input_data());
+
+    std::vector<F> result;
+    result.reserve(s.iterations());
+
+    {
+        picobench::scope scope(s);
+        parse_charconv<from_chars>(input->json, result);
+    }
+
+    size_t hash = hash_vec(result);
+    if (hash != input->expected_hash) {
+        throw std::runtime_error("hash mismatch");
+    }
+    s.set_result(hash);
+}
+
+int main(int argc, char** argv) {
+    std::mt19937 rng(get_seed());
+
+    picobench::runner r;
+    //r.set_suite("sanity");
+    //benchmark_input input_sanity(std::vector<double>{1.0, 2.0, 3.0, 4.0, 5.0});
+
+    r.set_suite("float");
+
+    auto input_float_a = make_benchmark_input<float>(rng, 10000);
+    auto input_float_b = make_benchmark_input<float>(rng, 100000);
+
+    std::vector<picobench::state::input> inputs_float = {
+        input_float_a.to_input(),
+        input_float_b.to_input()
+    };
+
+    r.add_benchmark("msstl", bench_charconv<msstl_from_chars, float>).inputs(inputs_float);
+#if HAVE_STD_CHARCONV
+    r.add_benchmark("std", bench_charconv<std_from_chars, float>).inputs(inputs_float);
+#endif
+
+    r.set_compare_results_across_samples(true);
+    r.set_compare_results_across_benchmarks(true);
+    r.parse_cmd_line(argc, argv);
+    return r.run();
 }
