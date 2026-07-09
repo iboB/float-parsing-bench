@@ -1,6 +1,8 @@
 #define PICOBENCH_IMPLEMENT
 #include <picobench/picobench.hpp>
 
+#include <splat/inline.h>
+
 #include <random>
 #include <iostream>
 #include <vector>
@@ -10,20 +12,14 @@
 
 #if HAVE_STD_CHARCONV
 #include <charconv>
-struct std_from_chars {
-    template <typename F>
-    auto operator()(const char* first, const char* last, F& value) const {
-        return std::from_chars(first, last, value);
-    }
-};
+FORCE_INLINE auto std_from_chars(const char* first, const char* last, double& value) {
+    return std::from_chars(first, last, value);
+}
 #endif
 
-struct msstl_from_chars {
-    template <typename F>
-    auto operator()(const char* first, const char* last, F& value) const {
-        return msstl::from_chars(first, last, value);
-    }
-};
+FORCE_INLINE auto msstl_from_chars(const char* first, const char* last, double& value) {
+    return msstl::from_chars(first, last, value);
+}
 
 uint32_t get_seed() {
     // uint32_t seed = std::random_device{}();
@@ -68,9 +64,8 @@ bool is_numeric(char c) {
     return (c >= '0' && c <= '9') || c == '.' || c == '-' || c == '+';
 }
 
-template <typename from_chars, typename F>
+template <auto from_chars, typename F>
 void parse_charconv(std::string_view str, std::vector<F>& out) {
-    from_chars fc;
     const char* cur = str.data();
     const char* end = str.data() + str.size();
     while (true) {
@@ -82,7 +77,7 @@ void parse_charconv(std::string_view str, std::vector<F>& out) {
         }
 
         double d;
-        auto res = fc(cur, end, d);
+        auto res = from_chars(cur, end, d);
         if (res.ec != std::errc()) {
             throw std::runtime_error("parse_charconv failed");
         }
@@ -118,7 +113,7 @@ benchmark_input make_benchmark_input(std::mt19937& rng, size_t size) {
     return benchmark_input{vec};
 }
 
-template <typename from_chars, typename F>
+template <auto from_chars, typename F>
 void bench_charconv(picobench::state& s) {
     auto input = benchmark_input::from_input_data(s.input_data());
 
@@ -139,10 +134,7 @@ void bench_charconv(picobench::state& s) {
 
 int main(int argc, char** argv) {
     std::mt19937 rng(get_seed());
-
     picobench::runner r;
-    //r.set_suite("sanity");
-    //benchmark_input input_sanity(std::vector<double>{1.0, 2.0, 3.0, 4.0, 5.0});
 
     r.set_suite("float");
 
@@ -157,6 +149,21 @@ int main(int argc, char** argv) {
     r.add_benchmark("msstl", bench_charconv<msstl_from_chars, float>).inputs(inputs_float);
 #if HAVE_STD_CHARCONV
     r.add_benchmark("std", bench_charconv<std_from_chars, float>).inputs(inputs_float);
+#endif
+
+    r.set_suite("double");
+
+    auto input_double_a = make_benchmark_input<double>(rng, 10000);
+    auto input_double_b = make_benchmark_input<double>(rng, 100000);
+
+    std::vector<picobench::state::input> inputs_double = {
+        input_double_a.to_input(),
+        input_double_b.to_input()
+    };
+
+    r.add_benchmark("msstl", bench_charconv<msstl_from_chars, double>).inputs(inputs_double);
+#if HAVE_STD_CHARCONV
+    r.add_benchmark("std", bench_charconv<std_from_chars, double>).inputs(inputs_double);
 #endif
 
     r.set_compare_results_across_samples(true);

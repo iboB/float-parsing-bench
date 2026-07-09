@@ -69,6 +69,7 @@ include(icm_check_charconv_fp_to_chars)
 # packages
 CPMAddPackage(gh:iboB/picobench@2.10.0)
 CPMAddPackage(gh:iboB/mscharconv@1.2.3)
+CPMAddPackage(gh:iboB/splat@1.3.5)
 
 ######################
 # benchmark
@@ -76,5 +77,6 @@ add_executable(benchmark benchmark.cpp)
 target_link_libraries(benchmark PRIVATE
     picobench::picobench
     msstl::charconv
+    splat::splat
 )
 target_compile_definitions(benchmark PRIVATE HAVE_STD_CHARCONV=$<BOOL:${haveCharconvFpToChars}>)
