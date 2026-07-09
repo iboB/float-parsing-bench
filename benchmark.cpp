@@ -10,17 +10,6 @@
 
 #include <msstl/charconv.hpp>
 
-#if HAVE_STD_CHARCONV
-#include <charconv>
-FORCE_INLINE auto std_from_chars(const char* first, const char* last, double& value) {
-    return std::from_chars(first, last, value);
-}
-#endif
-
-FORCE_INLINE auto msstl_from_chars(const char* first, const char* last, double& value) {
-    return msstl::from_chars(first, last, value);
-}
-
 uint32_t get_seed() {
     // uint32_t seed = std::random_device{}();
     uint32_t seed = 42;
@@ -65,7 +54,7 @@ bool is_numeric(char c) {
 }
 
 template <auto from_chars, typename F>
-void parse_charconv(std::string_view str, std::vector<F>& out) {
+void parse_json(std::string_view str, std::vector<F>& out) {
     const char* cur = str.data();
     const char* end = str.data() + str.size();
     while (true) {
@@ -79,7 +68,7 @@ void parse_charconv(std::string_view str, std::vector<F>& out) {
         double d;
         auto res = from_chars(cur, end, d);
         if (res.ec != std::errc()) {
-            throw std::runtime_error("parse_charconv failed");
+            throw std::runtime_error("from_chars failed");
         }
         out.push_back(F(d));
         cur = res.ptr;
@@ -122,7 +111,7 @@ void bench_charconv(picobench::state& s) {
 
     {
         picobench::scope scope(s);
-        parse_charconv<from_chars>(input->json, result);
+        parse_json<from_chars>(input->json, result);
     }
 
     size_t hash = hash_vec(result);
@@ -130,6 +119,17 @@ void bench_charconv(picobench::state& s) {
         throw std::runtime_error("hash mismatch");
     }
     s.set_result(hash);
+}
+
+#if HAVE_STD_CHARCONV
+#include <charconv>
+FORCE_INLINE auto std_from_chars(const char* first, const char* last, double& value) {
+    return std::from_chars(first, last, value);
+}
+#endif
+
+FORCE_INLINE auto msstl_from_chars(const char* first, const char* last, double& value) {
+    return msstl::from_chars(first, last, value);
 }
 
 int main(int argc, char** argv) {
