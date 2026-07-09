@@ -132,10 +132,40 @@ FORCE_INLINE auto msstl_from_chars(const char* first, const char* last, double& 
     return msstl::from_chars(first, last, value);
 }
 
+void sanity_check(double d) {
+    char buf[128] = {};
+    const auto end = buf + sizeof(buf);
+    msstl::to_chars(buf, end, d);
+
+#define CHECK_PARSE(func) \
+    { \
+        double d2 = 0; \
+        func(buf, end, d2); \
+        if (d != d2) { \
+            std::cout << "  " #func " FAIL " << buf << "\n"; \
+        } \
+    }
+
+    CHECK_PARSE(msstl_from_chars);
+#if HAVE_STD_CHARCONV
+    CHECK_PARSE(std_from_chars);
+#endif
+}
+
 int main(int argc, char** argv) {
     std::mt19937 rng(get_seed());
-    picobench::runner r;
 
+    // basic sanity checks
+    {
+        double checks[] = {
+            1, 1e60, 1e-120, 1.65, 0.3, 0.333, 3.141592, 1.3e60, 2.3e-120, 27.900001108646396
+        };
+        for (auto d : checks) {
+            sanity_check(d);
+        }
+    }
+
+    picobench::runner r;
     r.set_suite("float");
 
     auto input_float_a = make_benchmark_input<float>(rng, 10000);
