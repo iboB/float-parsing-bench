@@ -654,7 +654,7 @@ int main(int argc, char** argv) {
     // basic sanity checks
     {
         double checks[] = {
-            1, 1e60, 1e-120, 1.65, 0.3, 0.333, 3.141592, 2.352e60, 3e-121, 27.900001108646396
+            1, 1e60, 1e-120, 1.65, 0.3, 0.333, 3.141592, 2.352e60, 3e-121, 27.900001108646396, 0.96897762211270333
         };
         for (auto d : checks) {
             sanity_check(d);
