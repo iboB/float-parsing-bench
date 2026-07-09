@@ -437,6 +437,194 @@ msstl::from_chars_result sajson_from_chars(const char* p, const char* const end,
     }
 }
 
+msstl::from_chars_result sajson_from_chars_parts(const char* p, const char* const end, double& value) {
+    static constexpr unsigned RISKY = unsigned(INT_MAX) / 10;
+    unsigned max_digit_after_risky = unsigned(INT_MAX) % 10;
+
+    bool negative = false;
+    if ('-' == *p) {
+        ++p;
+        negative = true;
+
+        if (p == end) [[unlikely]] {
+            return {p, std::errc::invalid_argument};
+        }
+
+        ++max_digit_after_risky;
+    }
+
+    bool try_double = false;
+
+    unsigned u = 0;
+    double d = 0;
+    uint64_t frac = 0;
+    int64_t exponent = 0;
+    if (*p == '0') {
+        ++p;
+        if (p == end) [[unlikely]] {
+            return {p, std::errc::invalid_argument};
+        }
+    }
+    else {
+        unsigned char c = *p;
+        if (c < '0' || c > '9') {
+            return {p, std::errc::invalid_argument};
+        }
+
+        do {
+            ++p;
+            if (p == end) [[unlikely]] {
+                return {p, std::errc::invalid_argument};
+            }
+
+            unsigned char digit = c - '0';
+
+            if (!try_double && (u > RISKY || (u == RISKY && digit > max_digit_after_risky))) [[unlikely]] {
+                // TODO: could split this into two loops
+                try_double = true;
+                d = u;
+            }
+            if (try_double) [[unlikely]] {
+                d = 10.0 * d + digit;
+            }
+            else {
+                u = 10 * u + digit;
+            }
+
+            c = *p;
+        } while (c >= '0' && c <= '9');
+    }
+
+    if ('.' == *p) {
+        if (!try_double) {
+            try_double = true;
+            d = u;
+        }
+        ++p;
+        if (p == end) [[unlikely]] {
+            return {p, std::errc::invalid_argument};
+        }
+        char c = *p;
+        if (c < '0' || c > '9') {
+            return {p, std::errc::invalid_argument};
+        }
+
+        do {
+            ++p;
+            if (p == end) [[unlikely]] {
+                return {p, std::errc::invalid_argument};
+            }
+            frac = frac * 10 + (c - '0');
+            // One option to avoid underflow would be to clamp
+            // to INT_MIN, but int64 subtraction is cheap and
+            // in the absurd case of parsing 2 GB of digits
+            // with an extremely high exponent, this will
+            // produce accurate results.  Instead, we just
+            // leave exponent as int64_t and it will never
+            // underflow.
+            --exponent;
+
+            c = *p;
+        } while (c >= '0' && c <= '9');
+    }
+
+    char e = *p;
+    if ('e' == e || 'E' == e) [[unlikely]] {
+        if (!try_double) {
+            try_double = true;
+            d = u;
+        }
+        ++p;
+        if (p == end) [[unlikely]] {
+            return {p, std::errc::invalid_argument};
+        }
+
+        bool negativeExponent = false;
+        if ('-' == *p) {
+            negativeExponent = true;
+            ++p;
+            if (p == end) [[unlikely]] {
+                return {p, std::errc::invalid_argument};
+            }
+        }
+        else if ('+' == *p) {
+            ++p;
+            if (p == end) [[unlikely]] {
+                return {p, std::errc::invalid_argument};
+            }
+        }
+
+        int exp = 0;
+
+        char c = *p;
+        if (c < '0' || c > '9') [[unlikely]] {
+            return {p, std::errc::invalid_argument};
+        }
+        for (;;) {
+            // c guaranteed to be between '0' and '9', inclusive
+            unsigned char digit = c - '0';
+            if (exp > (INT_MAX - digit) / 10) {
+                // The exponent overflowed.  Keep parsing, but
+                // it will definitely be out of range when
+                // make_pow10 is called.
+                exp = INT_MAX;
+            }
+            else {
+                exp = 10 * exp + digit;
+            }
+
+            ++p;
+            if (p == end) [[unlikely]] {
+                return {p, std::errc::invalid_argument};
+            }
+
+            c = *p;
+            if (c < '0' || c > '9') {
+                break;
+            }
+        }
+        static_assert(
+            -INT_MAX >= INT_MIN, "exp can be negated without loss or UB");
+
+        if (negativeExponent) {
+            exp = -exp;
+        }
+
+        // If d is zero but the exponent is huge, don't
+        // scale zero by inf which gives nan.
+        if (d != 0.0) {
+            d = sajson_make_double_new(d, exp);
+            exponent += exp;
+        }
+    }
+
+    if (exponent) {
+        assert(try_double);
+        // If d is zero but the exponent is huge, don't
+        // scale zero by inf which gives nan.
+        if (frac != 0.0) {
+            d += sajson_make_double_new(double(frac), exponent);
+        }
+    }
+
+    if (negative) {
+        if (try_double) {
+            d = -d;
+        }
+        else {
+            u = 0u - u;
+        }
+    }
+    if (try_double) {
+        value = d;
+        return {p, {}};
+    }
+    else {
+        value = double(int32_t(u));
+        return {p, {}};
+    }
+}
+
 void sanity_check(double d) {
     char buf[128] = {};
     const auto end = buf + sizeof(buf);
@@ -457,6 +645,7 @@ void sanity_check(double d) {
 #endif
     CHECK_PARSE(sajson_from_chars<sajson_make_double_orig>);
     CHECK_PARSE(sajson_from_chars<sajson_make_double_new>);
+    CHECK_PARSE(sajson_from_chars_parts);
 }
 
 int main(int argc, char** argv) {
@@ -465,7 +654,7 @@ int main(int argc, char** argv) {
     // basic sanity checks
     {
         double checks[] = {
-            1, 1e60, 1e-120, 1.65, 0.3, 0.333, 3.141592, 1.3e60, 3e-121, 27.900001108646396
+            1, 1e60, 1e-120, 1.65, 0.3, 0.333, 3.141592, 2.352e60, 3e-121, 27.900001108646396
         };
         for (auto d : checks) {
             sanity_check(d);
@@ -491,6 +680,7 @@ int main(int argc, char** argv) {
 #endif
     r.add_benchmark("sajson_orig", bench_charconv<sajson_from_chars<sajson_make_double_orig>, float>).inputs(inputs_float);
     r.add_benchmark("sajson_new", bench_charconv<sajson_from_chars<sajson_make_double_new>, float>).inputs(inputs_float);
+    r.add_benchmark("sajson_parts", bench_charconv<sajson_from_chars_parts, float>).inputs(inputs_float);
 
     r.set_suite("double");
 
@@ -508,6 +698,7 @@ int main(int argc, char** argv) {
 #endif
     r.add_benchmark("sajson_orig", bench_charconv<sajson_from_chars<sajson_make_double_orig>, double>).inputs(inputs_double);
     r.add_benchmark("sajson_new", bench_charconv<sajson_from_chars<sajson_make_double_new>, double>).inputs(inputs_double);
+    r.add_benchmark("sajson_parts", bench_charconv<sajson_from_chars_parts, double>).inputs(inputs_double);
 
     r.set_compare_results_across_samples(true);
     r.set_compare_results_across_benchmarks(true);
