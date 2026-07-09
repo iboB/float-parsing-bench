@@ -260,7 +260,10 @@ double sajson_make_double_new(double d, int64_t exponent) {
 }
 
 template <double (*make_double)(double, int64_t)>
-msstl::from_chars_result sajson_from_chars(const char* p, const char* end, double& d) {
+msstl::from_chars_result sajson_from_chars(const char* p, const char* const end, double& d) {
+    static constexpr unsigned RISKY = unsigned(INT_MAX) / 10;
+    unsigned max_digit_after_risky = unsigned(INT_MAX) % 10;
+
     bool negative = false;
     if ('-' == *p) {
         ++p;
@@ -269,14 +272,18 @@ msstl::from_chars_result sajson_from_chars(const char* p, const char* end, doubl
         if (p == end) [[unlikely]] {
             return {p, std::errc::invalid_argument};
         }
+
+        ++max_digit_after_risky;
     }
 
-    d = 0.0;
+    bool try_double = false;
 
+    unsigned u = 0;
+    d = 0.0;
     if (*p == '0') {
         ++p;
-        if (p == end) {
-            return {p, {}};
+        if (p == end) [[unlikely]] {
+            return {p, std::errc::invalid_argument};
         }
     }
     else {
@@ -286,13 +293,25 @@ msstl::from_chars_result sajson_from_chars(const char* p, const char* end, doubl
         }
 
         do {
-            const unsigned char digit = c - '0';
-            d = 10.0 * d + digit;
-
             ++p;
-            if (p == end) {
-                return {p, {}};
+            if (p == end) [[unlikely]] {
+                return {p, std::errc::invalid_argument};
             }
+
+            unsigned char digit = c - '0';
+
+            if (!try_double && (u > RISKY || (u == RISKY && digit > max_digit_after_risky))) [[unlikely]] {
+                // TODO: could split this into two loops
+                try_double = true;
+                d = u;
+            }
+            if (try_double) [[unlikely]] {
+                d = 10.0 * d + digit;
+            }
+            else {
+                u = 10 * u + digit;
+            }
+
             c = *p;
         } while (c >= '0' && c <= '9');
     }
@@ -300,9 +319,13 @@ msstl::from_chars_result sajson_from_chars(const char* p, const char* end, doubl
     int64_t exponent = 0;
 
     if ('.' == *p) {
+        if (!try_double) {
+            try_double = true;
+            d = u;
+        }
         ++p;
-        if (p == end) {
-            return {p, {}};
+        if (p == end) [[unlikely]] {
+            return {p, std::errc::invalid_argument};
         }
         char c = *p;
         if (c < '0' || c > '9') {
@@ -310,6 +333,10 @@ msstl::from_chars_result sajson_from_chars(const char* p, const char* end, doubl
         }
 
         do {
+            ++p;
+            if (p == end) [[unlikely]] {
+                return {p, std::errc::invalid_argument};
+            }
             d = d * 10 + (c - '0');
             // One option to avoid underflow would be to clamp
             // to INT_MIN, but int64 subtraction is cheap and
@@ -320,18 +347,18 @@ msstl::from_chars_result sajson_from_chars(const char* p, const char* end, doubl
             // underflow.
             --exponent;
 
-            ++p;
-            if (p == end) {
-                break;
-            }
             c = *p;
         } while (c >= '0' && c <= '9');
     }
 
     char e = *p;
     if ('e' == e || 'E' == e) {
+        if (!try_double) {
+            try_double = true;
+            d = u;
+        }
         ++p;
-        if (p == end) {
+        if (p == end) [[unlikely]] {
             return {p, std::errc::invalid_argument};
         }
 
@@ -339,13 +366,13 @@ msstl::from_chars_result sajson_from_chars(const char* p, const char* end, doubl
         if ('-' == *p) {
             negativeExponent = true;
             ++p;
-            if (p == end) {
+            if (p == end) [[unlikely]] {
                 return {p, std::errc::invalid_argument};
             }
         }
         else if ('+' == *p) {
             ++p;
-            if (p == end) {
+            if (p == end) [[unlikely]] {
                 return {p, std::errc::invalid_argument};
             }
         }
@@ -362,7 +389,7 @@ msstl::from_chars_result sajson_from_chars(const char* p, const char* end, doubl
             if (exp > (INT_MAX - digit) / 10) {
                 // The exponent overflowed.  Keep parsing, but
                 // it will definitely be out of range when
-                // pow10 is called.
+                // make_pow10 is called.
                 exp = INT_MAX;
             }
             else {
@@ -370,7 +397,7 @@ msstl::from_chars_result sajson_from_chars(const char* p, const char* end, doubl
             }
 
             ++p;
-            if (p == end) {
+            if (p == end) [[unlikely]] {
                 return {p, std::errc::invalid_argument};
             }
 
@@ -385,18 +412,29 @@ msstl::from_chars_result sajson_from_chars(const char* p, const char* end, doubl
     }
 
     if (exponent) {
+        assert(try_double);
         // If d is zero but the exponent is huge, don't
-        // multiply zero by inf which gives nan.
+        // scale zero by inf which gives nan.
         if (d != 0.0) {
             d = make_double(d, exponent);
         }
     }
 
     if (negative) {
-        d = -d;
+        if (try_double) {
+            d = -d;
+        }
+        else {
+            u = 0u - u;
+        }
     }
-
-    return {p, {}};
+    if (try_double) {
+        return {p, {}};
+    }
+    else {
+        d = int32_t(u);
+        return {p, {}};
+    }
 }
 
 void sanity_check(double d) {
